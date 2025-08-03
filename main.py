@@ -9,7 +9,7 @@ def define_fuzzy_variables():
     t1 (low) to t5 (high)
     """
 
-    # Temperature and feature input ranges (you can tune these based on your dataset)
+    # Temperature and feature input ranges
     temperature_range = np.arange(10, 50, 1)
     feature_range = np.arange(0, 100, 1)
     output_range = np.arange(10, 50, 1)
