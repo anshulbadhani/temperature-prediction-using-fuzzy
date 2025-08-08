@@ -41,3 +41,47 @@ def define_fuzzy_variables():
     create_membership(temperature_output, output_range, labels)
 
     return temperature_input, feature_input, temperature_output
+
+def classify_value(value, fuzzy_variable):
+    """
+    Assigns a fuzzy category label (e.g., t1–t5) to a given numeric value
+    by finding which membership function it fits best.
+    """
+    max_membership = 0
+    best_label = None
+    for label in fuzzy_variable.terms:
+        membership_func = fuzzy_variable[label].mf
+        membership_value = fuzz.interp_membership(
+            fuzzy_variable.universe, membership_func, value
+        )
+        if membership_value > max_membership:
+            max_membership = membership_value
+            best_label = label
+    return best_label
+
+
+def generate_rules_from_data(dataframe, temp_var, feat_var, output_var):
+    """
+    Automatically creates fuzzy rules by reading from labeled CSV data.
+    """
+    rules = []
+
+    for index, row in dataframe.iterrows():
+        temp_val = row['Temperature']
+        feat_val = row['Feature']
+        out_val = row['NextDayTemperature']
+
+        temp_label = classify_value(temp_val, temp_var)
+        feat_label = classify_value(feat_val, feat_var)
+        out_label = classify_value(out_val, output_var)
+
+        rule = ctrl.Rule(
+            antecedent=(temp_var[temp_label] & feat_var[feat_label]),
+            consequent=output_var[out_label]
+        )
+
+        rules.append(rule)
+
+    return rules
+
+
