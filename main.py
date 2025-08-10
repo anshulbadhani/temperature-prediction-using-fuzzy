@@ -10,14 +10,14 @@ def define_fuzzy_variables():
     """
 
     # Temperature and feature input ranges
-    temperature_range = np.arange(10, 50, 1)
-    feature_range = np.arange(0, 100, 1)
+    temp_min = np.arange(-5, 55, 1)
+    temp_max = np.arange(-5, 55, 1)
     output_range = np.arange(10, 50, 1)
 
     # Create fuzzy variables
-    temperature_input = ctrl.Antecedent(temperature_range, 'temperature_input')
-    feature_input = ctrl.Antecedent(feature_range, 'feature_input')
-    temperature_output = ctrl.Consequent(output_range, 'temperature_output')
+    temp_min_input = ctrl.Antecedent(temp_min, 'temp_min_input')
+    temp_max_input = ctrl.Antecedent(temp_max, 'temp_max_input')
+    temp_output = ctrl.Consequent(output_range, 'temperature_output')
 
     # Define 5 membership categories for each variable: t1 to t5
     labels = ['t1', 't2', 't3', 't4', 't5']
@@ -36,11 +36,11 @@ def define_fuzzy_variables():
                 right = universe[0] + (i + 1) * step
                 var[label] = fuzz.trimf(universe, [left, center, right])
 
-    create_membership(temperature_input, temperature_range, labels)
-    create_membership(feature_input, feature_range, labels)
-    create_membership(temperature_output, output_range, labels)
+    create_membership(temp_min_input, temp_min, labels)
+    create_membership(temp_max_input, temp_max, labels)
+    create_membership(temp_output, output_range, labels)
 
-    return temperature_input, feature_input, temperature_output
+    return temp_min_input, temp_max_input, temp_output
 
 def classify_value(value, fuzzy_variable):
     """
