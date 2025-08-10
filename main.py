@@ -84,4 +84,40 @@ def generate_rules_from_data(dataframe, temp_var, feat_var, output_var):
 
     return rules
 
+def main():
+    file_path = "data.csv"  # Your CSV file
 
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"{file_path} not found.")
+
+    df = pd.read_csv(file_path)
+
+    # Ensure necessary columns exist
+    if not {"min_temp", "max_temp", "next_day_min_temp"}.issubset(df.columns):
+        raise ValueError("CSV must have: min_temp, max_temp, next_day_min_temp")
+
+    # Create fuzzy variables
+    min_var, max_var, output_var = define_fuzzy_variables()
+
+    # Generate fuzzy rules from existing data
+    rules = generate_rules_from_data(df, min_var, max_var, output_var)
+
+    # Create control system and simulator
+    system = ctrl.ControlSystem(rules)
+    sim = ctrl.ControlSystemSimulation(system)
+
+    # Predict and update CSV
+    predictions = []
+    for _, row in df.iterrows():
+        sim.input['min_temp'] = row['min_temp']
+        sim.input['max_temp'] = row['max_temp']
+        sim.compute()
+        predictions.append(sim.output['predicted_min_temp'])
+
+    df['predicted_min_temp'] = np.round(predictions, 2)
+    df.to_csv(file_path, index=False)
+
+    print(f"Updated {file_path} with predictions.")
+
+if __name__ == "__main__":
+    main()
