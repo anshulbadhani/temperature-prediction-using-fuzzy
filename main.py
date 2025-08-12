@@ -225,6 +225,30 @@ def run_fuzzy_simulation(df, rules, fuzzy_vars):
 # 4. Evaluation and Visualization
 
 
+
+def plot_membership_functions(universe, labels):
+    fig, ax = plt.subplots()
+    n_labels = len(labels)
+    min_val, max_val = universe[0], universe[-1]
+    range_size = max_val - min_val
+    
+    for i, label in enumerate(labels):
+        if i == 0:
+            peak = min_val + range_size * 0.3
+            mf = fuzz.trimf(universe, [min_val, min_val, peak])
+        elif i == n_labels - 1:
+            peak = min_val + range_size * 0.7
+            mf = fuzz.trimf(universe, [peak, max_val, max_val])
+        else:
+            left = min_val + range_size * (i - 0.5) / (n_labels - 1)
+            center = min_val + range_size * i / (n_labels - 1)
+            right = min_val + range_size * (i + 0.5) / (n_labels - 1)
+            mf = fuzz.trimf(universe, [left, center, right])
+        ax.plot(universe, mf, label=label)
+    ax.set_title("Membership Functions")
+    ax.legend()
+    plt.show()
+
 def evaluate_and_plot(df):
     """
     Calculates error metrics and plots the results for analysis.
@@ -290,6 +314,9 @@ def evaluate_and_plot(df):
     sns.heatmap(corr_df.corr(), annot=True, cmap="coolwarm", fmt=".2f")
     plt.title("Correlation Heatmap", fontsize=16)
     plt.show()
+
+    universe_temp = np.arange(-10, 45, 0.1)
+    plot_membership_functions(universe_temp, ["very_cold", "cold", "mild", "warm", "hot"])
 
 
 # Main Execution Block
