@@ -2,123 +2,331 @@ import numpy as np
 import pandas as pd
 import skfuzzy as fuzz
 from skfuzzy import control as ctrl
-import os
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-def define_fuzzy_variables():
+
+# 1. Data Loading and Preparation
+def load_and_prepare_data(filepath="data.csv"):
     """
-    Creates fuzzy input/output variables with 5 generic categories each:
-    t1 (low) to t5 (high)
+    Loads data, calculates the average temperature, and prepares the target variable.
+
+    Args:
+        filepath (str): The path to the CSV data file.
+
+    Returns:
+        pandas.DataFrame: Prepared DataFrame with necessary columns.
     """
+    try:
+        df = pd.read_csv(filepath)
+    except FileNotFoundError:
+        print(f"Error: The file {filepath} was not found.")
+        return None
 
-    # Temperature and feature input ranges
-    temp_min = np.arange(-5, 55, 1)
-    temp_max = np.arange(-5, 55, 1)
-    output_range = np.arange(10, 50, 1)
+    # Ensure required columns exist
+    required_cols = ["min_temp", "max_temp", "humidity", "pressure"]
+    if not all(col in df.columns for col in required_cols):
+        print(f"Error: CSV must contain the columns: {required_cols}")
+        return None
 
-    # Create fuzzy variables
-    temp_min_input = ctrl.Antecedent(temp_min, 'temp_min_input')
-    temp_max_input = ctrl.Antecedent(temp_max, 'temp_max_input')
-    temp_output = ctrl.Consequent(output_range, 'temperature_output')
+    # Handle potential missing values (using forward fill as a simple strategy)
+    df.ffill(inplace=True)
 
-    # Define 5 membership categories for each variable: t1 to t5
-    labels = ['t1', 't2', 't3', 't4', 't5']
+    # Calculate the average temperature for the current day
+    df["avg_temp"] = (df["min_temp"] + df["max_temp"]) / 2
 
-    # Function to evenly split a range into overlapping triangular categories
-    def create_membership(var, universe, labels):
-        step = (universe[-1] - universe[0]) // (len(labels) - 1)
-        for i, label in enumerate(labels):
-            if i == 0:
-                var[label] = fuzz.trimf(universe, [universe[0], universe[0], universe[0] + step])
-            elif i == len(labels) - 1:
-                var[label] = fuzz.trimf(universe, [universe[-1] - step, universe[-1], universe[-1]])
-            else:
-                left = universe[0] + (i - 1) * step
-                center = universe[0] + i * step
-                right = universe[0] + (i + 1) * step
-                var[label] = fuzz.trimf(universe, [left, center, right])
+    # Prepare the target variable: the actual average temperature of the *next* day
+    df["actual_next_avg_temp"] = df["avg_temp"].shift(-1)
 
-    create_membership(temp_min_input, temp_min, labels)
-    create_membership(temp_max_input, temp_max, labels)
-    create_membership(temp_output, output_range, labels)
+    # Drop the last row as it has no "next day" to predict
+    df.dropna(inplace=True)
 
-    return temp_min_input, temp_max_input, temp_output
+    print("Data loaded and prepared successfully.")
+    print(f"Data shape after preparation: {df.shape}")
+    return df
 
-def classify_value(value, fuzzy_variable):
+
+# 2. Fuzzy System Definition
+def define_fuzzy_system(df):
     """
-    Assigns a fuzzy category label (e.g., t1–t5) to a given numeric value
-    by finding which membership function it fits best.
+    Defines the fuzzy antecedents (inputs) and consequent (output) based on data ranges.
+
+    Args:
+        df (pandas.DataFrame): The dataframe containing the training data.
+
+    Returns:
+        tuple: A tuple containing the defined fuzzy variables.
     """
-    max_membership = 0
-    best_label = None
-    for label in fuzzy_variable.terms:
-        membership_func = fuzzy_variable[label].mf
-        membership_value = fuzz.interp_membership(
-            fuzzy_variable.universe, membership_func, value
-        )
-        if membership_value > max_membership:
-            max_membership = membership_value
-            best_label = label
-    return best_label
+    # Create dynamic ranges with a 5% buffer for robustness
+    min_temp_range = (df["min_temp"].min() * 0.95, df["min_temp"].max() * 1.05)
+    max_temp_range = (df["max_temp"].min() * 0.95, df["max_temp"].max() * 1.05)
+    humidity_range = (df["humidity"].min() * 0.95, df["humidity"].max() * 1.05)
+    pressure_range = (df["pressure"].min() * 0.99, df["pressure"].max() * 1.01)
+    output_range = (
+        df["actual_next_avg_temp"].min() * 0.95,
+        df["actual_next_avg_temp"].max() * 1.05,
+    )
+
+    # Define Antecedents (Inputs)
+    min_temp = ctrl.Antecedent(np.arange(*min_temp_range, 0.1), "min_temp")
+    max_temp = ctrl.Antecedent(np.arange(*max_temp_range, 0.1), "max_temp")
+    humidity = ctrl.Antecedent(np.arange(*humidity_range, 1), "humidity")
+    pressure = ctrl.Antecedent(np.arange(*pressure_range, 0.1), "pressure")
+
+    # Define Consequent (Output)
+    next_avg_temp = ctrl.Consequent(np.arange(*output_range, 0.1), "next_avg_temp")
+
+    # Automatically generate membership functions
+    # Using 5 levels: 't1' (very less), 't2' (less), 't3' (average), 't4' (good), 't5' (very good)
+    # The names are generic; they represent levels from low to high.
+    var_names = ["t1", "t2", "t3", "t4", "t5"]
+    min_temp.automf(names=var_names)
+    max_temp.automf(names=var_names)
+    humidity.automf(names=var_names)
+    pressure.automf(names=var_names)
+    next_avg_temp.automf(names=var_names)
+
+    print("Fuzzy variables and membership functions defined.")
+    return min_temp, max_temp, humidity, pressure, next_avg_temp
 
 
-def generate_rules_from_data(dataframe, temp_var, feat_var, output_var):
+def get_fuzzy_labels(df, fuzzy_vars):
     """
-    Automatically creates fuzzy rules by reading from labeled CSV data.
+    Determines the fuzzy label for each data point for every variable.
+
+    Args:
+        df (pandas.DataFrame): The input data.
+        fuzzy_vars (dict): A dictionary of fuzzy variables.
+
+    Returns:
+        pandas.DataFrame: DataFrame with added columns for fuzzy labels.
     """
+    fuzzified_df = df.copy()
+    for name, var in fuzzy_vars.items():
+        labels = []
+        for val in df[name]:
+            # Find the fuzzy set with the highest membership value for the given crisp input
+            memberships = {
+                label: fuzz.interp_membership(var.universe, var[label].mf, val)
+                for label in var.terms
+            }
+            best_label = max(memberships, key=memberships.get)
+            labels.append(best_label)
+        fuzzified_df[f"{name}_fuzzy"] = labels
+    return fuzzified_df
+
+
+def generate_rules_from_data(df, fuzzy_vars):
+    """
+    Generates fuzzy rules by finding the most frequent patterns in the data.
+
+    This is the core of the data-driven approach.
+
+    Args:
+        df (pandas.DataFrame): The prepared dataframe.
+        fuzzy_vars (dict): A dictionary of the fuzzy variables.
+
+    Returns:
+        list: A list of generated fuzzy `ctrl.Rule` objects.
+    """
+    print("Generating rules from data...")
+
+    # Fuzzify the entire dataset to get labels for each row
+    fuzzy_inputs = {
+        "min_temp": fuzzy_vars["min_temp"],
+        "max_temp": fuzzy_vars["max_temp"],
+        "humidity": fuzzy_vars["humidity"],
+        "pressure": fuzzy_vars["pressure"],
+    }
+    fuzzy_output = {"actual_next_avg_temp": fuzzy_vars["next_avg_temp"]}
+
+    df_fuzzified = get_fuzzy_labels(df, fuzzy_inputs)
+    df_fuzzified = get_fuzzy_labels(df_fuzzified, fuzzy_output)
+
+    # Group by the fuzzy input states and find the most common output state
+    rule_antecedents = [
+        "min_temp_fuzzy",
+        "max_temp_fuzzy",
+        "humidity_fuzzy",
+        "pressure_fuzzy",
+    ]
+
+    # Use mode to find the most frequent consequent for each antecedent combination
+    rule_map = (
+        df_fuzzified.groupby(rule_antecedents)["actual_next_avg_temp_fuzzy"]
+        .agg(lambda x: x.mode()[0])
+        .reset_index()
+    )
+
+    # Create the rules
     rules = []
-
-    for index, row in dataframe.iterrows():
-        temp_val = row['Temperature']
-        feat_val = row['Feature']
-        out_val = row['NextDayTemperature']
-
-        temp_label = classify_value(temp_val, temp_var)
-        feat_label = classify_value(feat_val, feat_var)
-        out_label = classify_value(out_val, output_var)
-
-        rule = ctrl.Rule(
-            antecedent=(temp_var[temp_label] & feat_var[feat_label]),
-            consequent=output_var[out_label]
+    for _, row in rule_map.iterrows():
+        antecedent = (
+            fuzzy_vars["min_temp"][row["min_temp_fuzzy"]]
+            & fuzzy_vars["max_temp"][row["max_temp_fuzzy"]]
+            & fuzzy_vars["humidity"][row["humidity_fuzzy"]]
+            & fuzzy_vars["pressure"][row["pressure_fuzzy"]]
         )
+        consequent = fuzzy_vars["next_avg_temp"][row["actual_next_avg_temp_fuzzy"]]
+        rules.append(ctrl.Rule(antecedent, consequent))
 
-        rules.append(rule)
-
+    print(f"Successfully generated {len(rules)} rules from data.")
     return rules
 
-def main():
-    file_path = "data.csv"  # Your CSV file
 
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"{file_path} not found.")
+# 3. Fuzzy Simulation and Prediction
 
-    df = pd.read_csv(file_path)
 
-    # Ensure necessary columns exist
-    if not {"min_temp", "max_temp", "next_day_min_temp"}.issubset(df.columns):
-        raise ValueError("CSV must have: min_temp, max_temp, next_day_min_temp")
+def run_fuzzy_simulation(df, rules, fuzzy_vars):
+    """
+    Runs the fuzzy control system simulation to predict next day's temperature.
 
-    # Create fuzzy variables
-    min_var, max_var, output_var = define_fuzzy_variables()
+    Args:
+        df (pandas.DataFrame): The input data.
+        rules (list): The list of fuzzy rules.
+        fuzzy_vars (dict): A dictionary of the fuzzy variables.
 
-    # Generate fuzzy rules from existing data
-    rules = generate_rules_from_data(df, min_var, max_var, output_var)
+    Returns:
+        pandas.DataFrame: DataFrame with a new column for predictions.
+    """
+    print("Running fuzzy simulation...")
+    # Create the control system and simulation
+    control_system = ctrl.ControlSystem(rules)
+    simulation = ctrl.ControlSystemSimulation(control_system)
 
-    # Create control system and simulator
-    system = ctrl.ControlSystem(rules)
-    sim = ctrl.ControlSystemSimulation(system)
-
-    # Predict and update CSV
     predictions = []
-    for _, row in df.iterrows():
-        sim.input['min_temp'] = row['min_temp']
-        sim.input['max_temp'] = row['max_temp']
-        sim.compute()
-        predictions.append(sim.output['predicted_min_temp'])
+    for i, row in df.iterrows():
+        try:
+            # Set inputs for the simulation
+            simulation.input["min_temp"] = row["min_temp"]
+            simulation.input["max_temp"] = row["max_temp"]
+            simulation.input["humidity"] = row["humidity"]
+            simulation.input["pressure"] = row["pressure"]
 
-    df['predicted_min_temp'] = np.round(predictions, 2)
-    df.to_csv(file_path, index=False)
+            # Compute the result
+            simulation.compute()
+            predictions.append(simulation.output["next_avg_temp"])
+        except Exception as e:
+            # If a specific combination of inputs has no matching rule, it can fail.
+            # We append NaN and handle it later.
+            # print(f"Warning: Could not compute for row {i}. Error: {e}")
+            predictions.append(np.nan)
 
-    print(f"Updated {file_path} with predictions.")
+    df["predicted_temp"] = predictions
+
+    # A simple forward-fill for cases where no rule was activated
+    df["predicted_temp"].ffill(inplace=True)
+    df["predicted_temp"].bfill(inplace=True)  # Back-fill for any leading NaNs
+
+    print("Simulation complete.")
+    return df
+
+
+# 4. Evaluation and Visualization
+
+
+def evaluate_and_plot(df):
+    """
+    Calculates error metrics and plots the results for analysis.
+    """
+    if "predicted_temp" not in df.columns or df["predicted_temp"].isnull().all():
+        print("Evaluation skipped: No valid predictions were made.")
+        return
+
+    # --- Metrics ---
+    mae = np.mean(np.abs(df["actual_next_avg_temp"] - df["predicted_temp"]))
+    rmse = np.sqrt(np.mean((df["actual_next_avg_temp"] - df["predicted_temp"]) ** 2))
+    print("\n--- Model Evaluation ---")
+    print(f"Mean Absolute Error (MAE): {mae:.2f}°C")
+    print(f"Root Mean Squared Error (RMSE): {rmse:.2f}°C")
+    print("------------------------\n")
+
+    # --- Plotting ---
+    plt.style.use("seaborn-v0_8-whitegrid")
+
+    # 1. Actual vs. Predicted Time Series
+    plt.figure(figsize=(15, 6))
+    plt.plot(
+        df.index,
+        df["actual_next_avg_temp"],
+        label="Actual Next Day Temp",
+        color="blue",
+        alpha=0.8,
+    )
+    plt.plot(
+        df.index,
+        df["predicted_temp"],
+        label="Predicted Temp",
+        color="red",
+        linestyle="--",
+    )
+    plt.title("Actual vs. Predicted Temperature", fontsize=16)
+    plt.xlabel("Date")
+    plt.ylabel("Average Temperature (°C)")
+    plt.legend()
+    plt.show()
+
+    # 2. Error Distribution
+    errors = df["actual_next_avg_temp"] - df["predicted_temp"]
+    plt.figure(figsize=(10, 5))
+    sns.histplot(errors, kde=True, bins=20)
+    plt.title("Prediction Error Distribution", fontsize=16)
+    plt.xlabel("Error (°C)")
+    plt.ylabel("Frequency")
+    plt.show()
+
+    # 3. Correlation Heatmap
+    plt.figure(figsize=(8, 6))
+    corr_df = df[
+        [
+            "min_temp",
+            "max_temp",
+            "humidity",
+            "pressure",
+            "actual_next_avg_temp",
+            "predicted_temp",
+        ]
+    ]
+    sns.heatmap(corr_df.corr(), annot=True, cmap="coolwarm", fmt=".2f")
+    plt.title("Correlation Heatmap", fontsize=16)
+    plt.show()
+
+
+# Main Execution Block
 
 if __name__ == "__main__":
-    main()
+    # 1. Load and process data
+    data = load_and_prepare_data("data.csv")
+
+    if data is not None:
+        # Set date as index for better plotting if 'date' column exists
+        if "date" in data.columns:
+            data["date"] = pd.to_datetime(data["date"])
+            data.set_index("date", inplace=True)
+
+        # 2. Define the fuzzy system architecture
+        min_temp_var, max_temp_var, humidity_var, pressure_var, next_avg_temp_var = (
+            define_fuzzy_system(data)
+        )
+
+        fuzzy_variables = {
+            "min_temp": min_temp_var,
+            "max_temp": max_temp_var,
+            "humidity": humidity_var,
+            "pressure": pressure_var,
+            "next_avg_temp": next_avg_temp_var,
+        }
+
+        # 3. Generate rules from the data
+        fuzzy_rules = generate_rules_from_data(data, fuzzy_variables)
+
+        # 4. Run the simulation to get predictions
+        results_df = run_fuzzy_simulation(data, fuzzy_rules, fuzzy_variables)
+
+        # 5. Evaluate the results and plot graphs
+        evaluate_and_plot(results_df)
+
+        # 6. Save results to CSV
+        output_filepath = "temperature_predictions_output.csv"
+        results_df.to_csv(output_filepath)
+        print(f"Results saved to {output_filepath}")
